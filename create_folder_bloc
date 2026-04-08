@@ -1,0 +1,520 @@
+#!/bin/bash
+
+# ─────────────────────────────────────────────
+#  Flutter Clean Architecture Feature Generator
+# ─────────────────────────────────────────────
+
+set -e
+
+PACKAGE_NAME=$(grep '^name:' pubspec.yaml | awk '{print $2}')
+
+if [ -z "$1" ]; then
+  echo "Usage: bash create_feature.sh <feature_name>"
+  echo "Example: bash create_feature.sh user_profile"
+  exit 1
+fi
+
+# ── Name helpers ──────────────────────────────
+FEATURE_SNAKE="$1"   # e.g. user_profile
+
+# snake_case → PascalCase
+FEATURE_PASCAL=$(python3 -c "print(''.join(w.capitalize() for w in '${FEATURE_SNAKE}'.split('_')))")
+
+BASE="lib/feature/$FEATURE_SNAKE"
+
+echo ""
+echo "Creating feature: $FEATURE_PASCAL ($FEATURE_SNAKE)"
+echo "Path: $BASE"
+echo ""
+
+# ── core/ (create only if missing) ───────────
+if [ ! -d "lib/core" ]; then
+  echo "Creating lib/core..."
+
+  mkdir -p lib/core/error
+  mkdir -p lib/core/constants
+
+  cat > "lib/core/error/exception.dart" <<DART
+class ServerException implements Exception {}
+DART
+
+  cat > "lib/core/error/failure.dart" <<DART
+import 'package:equatable/equatable.dart';
+
+abstract class Failure extends Equatable {
+  final String message;
+  const Failure(this.message);
+
+  @override
+  List<Object> get props => [message];
+}
+
+class ServerFailure extends Failure {
+  const ServerFailure(String message) : super(message);
+}
+
+class ConnectionFailure extends Failure {
+  const ConnectionFailure(String message) : super(message);
+}
+
+class DatabaseFailure extends Failure {
+  const DatabaseFailure(String message) : super(message);
+}
+DART
+
+  cat > "lib/core/constants/constants.dart" <<DART
+class Urls {
+  static const String baseUrl = 'https://api.example.com';
+  static String getById(String id) => '\$baseUrl/resource/\$id';
+}
+DART
+
+  echo "  Created: lib/core/error/exception.dart"
+  echo "  Created: lib/core/error/failure.dart"
+  echo "  Created: lib/core/constants/constants.dart"
+fi
+
+# ── Directories ───────────────────────────────
+mkdir -p "$BASE/data/data_sources"
+mkdir -p "$BASE/data/models"
+mkdir -p "$BASE/data/repositories"
+mkdir -p "$BASE/domain/entities"
+mkdir -p "$BASE/domain/repositories"
+mkdir -p "$BASE/domain/usecases"
+mkdir -p "$BASE/presentation/bloc"
+mkdir -p "$BASE/presentation/pages"
+
+# ── domain/entities ───────────────────────────
+cat > "$BASE/domain/entities/${FEATURE_SNAKE}.dart" <<DART
+import 'package:equatable/equatable.dart';
+
+class ${FEATURE_PASCAL}Entity extends Equatable {
+
+  const ${FEATURE_PASCAL}Entity();
+
+  @override
+  List<Object?> get props => [];
+}
+DART
+
+# ── domain/repositories ───────────────────────
+cat > "$BASE/domain/repositories/${FEATURE_SNAKE}_repository.dart" <<DART
+import 'package:dartz/dartz.dart';
+import 'package:$PACKAGE_NAME/core/error/failure.dart';
+import '../entities/${FEATURE_SNAKE}.dart';
+
+abstract class ${FEATURE_PASCAL}Repository {
+  Future<Either<Failure, ${FEATURE_PASCAL}Entity>> getCurrent${FEATURE_PASCAL}(String param);
+}
+DART
+
+# ── domain/usecases ───────────────────────────
+cat > "$BASE/domain/usecases/get_current_${FEATURE_SNAKE}.dart" <<DART
+import 'package:dartz/dartz.dart';
+import 'package:$PACKAGE_NAME/core/error/failure.dart';
+import '../entities/${FEATURE_SNAKE}.dart';
+import '../repositories/${FEATURE_SNAKE}_repository.dart';
+
+class GetCurrent${FEATURE_PASCAL}UseCase {
+
+  final ${FEATURE_PASCAL}Repository ${FEATURE_SNAKE}Repository;
+
+  GetCurrent${FEATURE_PASCAL}UseCase(this.${FEATURE_SNAKE}Repository);
+
+  Future<Either<Failure, ${FEATURE_PASCAL}Entity>> execute(String param) {
+    return ${FEATURE_SNAKE}Repository.getCurrent${FEATURE_PASCAL}(param);
+  }
+}
+DART
+
+# ── data/models ───────────────────────────────
+cat > "$BASE/data/models/${FEATURE_SNAKE}_model.dart" <<DART
+import '../../domain/entities/${FEATURE_SNAKE}.dart';
+
+class ${FEATURE_PASCAL}Model extends ${FEATURE_PASCAL}Entity {
+  const ${FEATURE_PASCAL}Model();
+
+  factory ${FEATURE_PASCAL}Model.fromJson(Map<String, dynamic> json) {
+    return const ${FEATURE_PASCAL}Model();
+  }
+
+  Map<String, dynamic> toJson() {
+    return {};
+  }
+}
+DART
+
+# ── data/data_sources ─────────────────────────
+cat > "$BASE/data/data_sources/remote_data_source.dart" <<DART
+import 'package:http/http.dart' as http;
+import 'package:$PACKAGE_NAME/core/error/exception.dart';
+import '../models/${FEATURE_SNAKE}_model.dart';
+
+abstract class ${FEATURE_PASCAL}RemoteDataSource {
+  Future<${FEATURE_PASCAL}Model> getCurrent${FEATURE_PASCAL}(String param);
+}
+
+class ${FEATURE_PASCAL}RemoteDataSourceImpl implements ${FEATURE_PASCAL}RemoteDataSource {
+  final http.Client client;
+
+  ${FEATURE_PASCAL}RemoteDataSourceImpl({required this.client});
+
+  @override
+  Future<${FEATURE_PASCAL}Model> getCurrent${FEATURE_PASCAL}(String param) async {
+    final response = await client.get(
+      Uri.parse('https://api.example.com/${FEATURE_SNAKE}?param=\$param'),
+      headers: {'Content-Type': 'application/json'},
+    );
+
+    if (response.statusCode == 200) {
+      // TODO: parse response body
+      return const ${FEATURE_PASCAL}Model();
+    } else {
+      throw ServerException();
+    }
+  }
+}
+DART
+
+# ── data/repositories ─────────────────────────
+cat > "$BASE/data/repositories/${FEATURE_SNAKE}_repository_impl.dart" <<DART
+import 'dart:io';
+import 'package:dartz/dartz.dart';
+import 'package:$PACKAGE_NAME/core/error/exception.dart';
+import 'package:$PACKAGE_NAME/core/error/failure.dart';
+import '../../domain/entities/${FEATURE_SNAKE}.dart';
+import '../../domain/repositories/${FEATURE_SNAKE}_repository.dart';
+import '../data_sources/remote_data_source.dart';
+
+class ${FEATURE_PASCAL}RepositoryImpl implements ${FEATURE_PASCAL}Repository {
+  final ${FEATURE_PASCAL}RemoteDataSource remoteDataSource;
+
+  ${FEATURE_PASCAL}RepositoryImpl({required this.remoteDataSource});
+
+  @override
+  Future<Either<Failure, ${FEATURE_PASCAL}Entity>> getCurrent${FEATURE_PASCAL}(String param) async {
+    try {
+      final result = await remoteDataSource.getCurrent${FEATURE_PASCAL}(param);
+      return Right(result);
+    }  on ServerException {
+        return const Left(ServerFailure('An error has occurred'));
+    } on SocketException {
+        return const Left(ConnectionFailure('Failed to connect to the network'));
+    }
+  }
+}
+DART
+
+# ── presentation/bloc ─────────────────────────
+cat > "$BASE/presentation/bloc/${FEATURE_SNAKE}_event.dart" <<DART
+part of '${FEATURE_SNAKE}_bloc.dart';
+
+abstract class ${FEATURE_PASCAL}Event extends Equatable {
+  const ${FEATURE_PASCAL}Event();
+
+  @override
+  List<Object?> get props => [];
+}
+
+class OnParamChanged extends ${FEATURE_PASCAL}Event {
+  final String param;
+
+  const OnParamChanged(this.param);
+
+  @override
+  List<Object?> get props => [param];
+}
+DART
+
+cat > "$BASE/presentation/bloc/${FEATURE_SNAKE}_state.dart" <<DART
+part of '${FEATURE_SNAKE}_bloc.dart';
+
+abstract class ${FEATURE_PASCAL}State extends Equatable {
+  const ${FEATURE_PASCAL}State();
+
+  @override
+  List<Object?> get props => [];
+}
+
+class ${FEATURE_PASCAL}Empty extends ${FEATURE_PASCAL}State {}
+
+class ${FEATURE_PASCAL}Loading extends ${FEATURE_PASCAL}State {}
+
+class ${FEATURE_PASCAL}Loaded extends ${FEATURE_PASCAL}State {
+  final ${FEATURE_PASCAL}Entity ${FEATURE_SNAKE};
+
+  const ${FEATURE_PASCAL}Loaded(this.${FEATURE_SNAKE});
+
+  @override
+  List<Object?> get props => [${FEATURE_SNAKE}];
+}
+
+class ${FEATURE_PASCAL}LoadFailure extends ${FEATURE_PASCAL}State {
+  final String message;
+
+  const ${FEATURE_PASCAL}LoadFailure(this.message);
+
+  @override
+  List<Object?> get props => [message];
+}
+DART
+
+cat > "$BASE/presentation/bloc/${FEATURE_SNAKE}_bloc.dart" <<DART
+import 'package:bloc/bloc.dart';
+import 'package:equatable/equatable.dart';
+import 'package:rxdart/rxdart.dart';
+import '../../domain/entities/${FEATURE_SNAKE}.dart';
+import '../../domain/usecases/get_current_${FEATURE_SNAKE}.dart';
+
+part '${FEATURE_SNAKE}_event.dart';
+part '${FEATURE_SNAKE}_state.dart';
+
+class ${FEATURE_PASCAL}Bloc extends Bloc<${FEATURE_PASCAL}Event, ${FEATURE_PASCAL}State> {
+  final GetCurrent${FEATURE_PASCAL}UseCase getCurrent${FEATURE_PASCAL};
+
+  ${FEATURE_PASCAL}Bloc({required this.getCurrent${FEATURE_PASCAL}}) : super(${FEATURE_PASCAL}Empty()) {
+    on<OnParamChanged>(
+      _onParamChanged,
+      transformer: (events, mapper) => events
+          .debounceTime(const Duration(milliseconds: 500))
+          .flatMap(mapper),
+    );
+  }
+
+  Future<void> _onParamChanged(
+    OnParamChanged event,
+    Emitter<${FEATURE_PASCAL}State> emit,
+  ) async {
+    emit(${FEATURE_PASCAL}Loading());
+    final result = await getCurrent${FEATURE_PASCAL}.execute(event.param);
+    result.fold(
+      (failure) => emit(${FEATURE_PASCAL}LoadFailure(failure.toString())),
+      (data) => emit(${FEATURE_PASCAL}Loaded(data)),
+    );
+  }
+}
+DART
+
+# ── presentation/pages ────────────────────────
+cat > "$BASE/presentation/pages/${FEATURE_SNAKE}_page.dart" <<DART
+import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
+import '../bloc/${FEATURE_SNAKE}_bloc.dart';
+
+class ${FEATURE_PASCAL}Page extends StatelessWidget {
+  const ${FEATURE_PASCAL}Page({ Key? key }) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('$FEATURE_PASCAL')),
+      body: Column(
+        children: [
+          TextField(
+            onChanged: (value) =>
+                context.read<${FEATURE_PASCAL}Bloc>().add(OnParamChanged(value)),
+            decoration: const InputDecoration(
+              hintText: 'Search...',
+              prefixIcon: Icon(Icons.search),
+            ),
+          ),
+          BlocBuilder<${FEATURE_PASCAL}Bloc, ${FEATURE_PASCAL}State>(
+            builder: (context, state) {
+              if (state is ${FEATURE_PASCAL}Loading) {
+                return const Center(child: CircularProgressIndicator());
+              } else if (state is ${FEATURE_PASCAL}Loaded) {
+                return Center(child: Text('\${state.${FEATURE_SNAKE}}'));
+              } else if (state is ${FEATURE_PASCAL}LoadFailure) {
+                return Center(child: Text('Error: \${state.message}'));
+              }
+              return const Center(child: Text('Start searching...'));
+            },
+          ),
+        ],
+      ),
+    );
+  }
+}
+DART
+
+# ── injection_container.dart ──────────────────
+INJECTION_FILE="lib/injection_container.dart"
+
+python3 - <<PYEOF
+feature_snake  = "$FEATURE_SNAKE"
+feature_pascal = "$FEATURE_PASCAL"
+injection_file = "$INJECTION_FILE"
+
+new_imports = f"""import 'feature/{feature_snake}/data/data_sources/remote_data_source.dart';
+import 'feature/{feature_snake}/data/repositories/{feature_snake}_repository_impl.dart';
+import 'feature/{feature_snake}/domain/repositories/{feature_snake}_repository.dart';
+import 'feature/{feature_snake}/domain/usecases/get_current_{feature_snake}.dart';
+import 'feature/{feature_snake}/presentation/bloc/{feature_snake}_bloc.dart';"""
+
+new_registrations = f"""
+  // ── {feature_pascal} ──
+  // bloc
+  locator.registerFactory(() => {feature_pascal}Bloc(getCurrent{feature_pascal}: locator()));
+
+  // usecase
+  locator.registerLazySingleton(() => GetCurrent{feature_pascal}UseCase(locator()));
+
+  // repository
+  locator.registerLazySingleton<{feature_pascal}Repository>(
+    () => {feature_pascal}RepositoryImpl(remoteDataSource: locator()),
+  );
+
+  // data source
+  locator.registerLazySingleton<{feature_pascal}RemoteDataSource>(
+    () => {feature_pascal}RemoteDataSourceImpl(
+      client: locator(),
+    ),
+  );
+"""
+
+import os
+
+if not os.path.exists(injection_file):
+    # Create the file from scratch
+    content = f"""import 'package:get_it/get_it.dart';
+import 'package:http/http.dart' as http;
+
+{new_imports}
+
+final locator = GetIt.instance;
+
+void setupLocator() {{
+  // external
+  locator.registerLazySingleton(() => http.Client());
+{new_registrations}}}
+"""
+    with open(injection_file, 'w') as f:
+        f.write(content)
+    print(f"Created {injection_file}")
+else:
+    with open(injection_file, 'r') as f:
+        content = f.read()
+
+    # Insert imports before 'final locator'
+    anchor_import = 'final locator'
+    content = content.replace(anchor_import, new_imports + '\n\n' + anchor_import)
+
+    # Insert registrations before the last closing brace of setupLocator()
+    last_brace = content.rfind('}')
+    content = content[:last_brace] + new_registrations + content[last_brace:]
+
+    with open(injection_file, 'w') as f:
+        f.write(content)
+    print(f"Updated {injection_file}")
+
+# ── main.dart ──
+import re
+
+package_name  = "$PACKAGE_NAME"
+main_file     = "lib/main.dart"
+
+bloc_import = f"import 'feature/{feature_snake}/presentation/bloc/{feature_snake}_bloc.dart';"
+
+new_provider = f"""        BlocProvider(
+          create: (_) => locator<{feature_pascal}Bloc>(),
+        )"""
+
+if not os.path.exists(main_file):
+    content = f"""import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:{package_name}/injection_container.dart';
+
+{bloc_import}
+
+void main() {{
+  setupLocator();
+  runApp(const MyApp());
+}}
+
+class MyApp extends StatelessWidget {{
+  const MyApp({{Key? key}}) : super(key: key);
+
+  @override
+  Widget build(BuildContext context) {{
+    return MultiBlocProvider(
+      providers: [
+{new_provider}
+      ],
+      child: const MaterialApp(
+        home: {feature_pascal}Page(),
+      ),
+    );
+  }}
+}}
+"""
+    with open(main_file, 'w') as f:
+        f.write(content)
+    print(f"Created {main_file}")
+else:
+    with open(main_file, 'r') as f:
+        content = f.read()
+
+    # 1. Ensure injection_container is imported
+    if f"package:{package_name}/injection_container.dart" not in content:
+        content = content.replace(
+            "import 'package:flutter/material.dart';",
+            f"import 'package:flutter/material.dart';\nimport 'package:flutter_bloc/flutter_bloc.dart';\nimport 'package:{package_name}/injection_container.dart';"
+        )
+        print("  + Added injection_container import")
+
+    # 2. Add feature bloc import before void main()
+    if bloc_import not in content:
+        content = content.replace('void main()', f"{bloc_import}\n\nvoid main()")
+
+    # Guard: skip if this feature's BlocProvider already exists
+    if f"locator<{feature_pascal}Bloc>()" in content:
+        with open(main_file, 'w') as f:
+            f.write(content)
+        print(f"Updated {main_file} (BlocProvider for {feature_pascal} already present, skipped duplicate)")
+        exit()
+
+    # 3. Ensure setupLocator() is called inside main()
+    if 'setupLocator()' not in content:
+        content = content.replace('void main() {', 'void main() {\n  setupLocator();')
+        print("  + Added setupLocator() call")
+
+    # 4. Ensure MultiBlocProvider wraps the app
+    if 'MultiBlocProvider' not in content:
+        # Wrap existing runApp child with MultiBlocProvider
+        content = re.sub(
+            r'runApp\(const (\w+)\(\)\)',
+            f"""runApp(
+    MultiBlocProvider(
+      providers: [
+{new_provider}
+      ],
+      child: const MaterialApp(home: {feature_pascal}Page()),
+    ),
+  )""",
+            content
+        )
+        print("  + Wrapped app with MultiBlocProvider")
+    else:
+        # MultiBlocProvider exists — add new BlocProvider to providers list
+        content = re.sub(
+            r'(\s*\)\s*)\n(\s*\],)',
+            lambda m: m.group(1).rstrip() + ',\n' + new_provider + '\n' + m.group(2),
+            content,
+            count=1,
+            flags=re.MULTILINE
+        )
+
+    with open(main_file, 'w') as f:
+        f.write(content)
+    print(f"Updated {main_file}")
+PYEOF
+
+# ── Summary ───────────────────────────────────
+echo ""
+echo "Done! Files created:"
+find "$BASE" -type f | sort
+echo ""
+echo "Next steps:"
+echo "  1. Update the API URL in remote_data_source.dart"
+echo "  2. Fill in entity fields and JSON parsing in the model"
+echo "  3. Add ${FEATURE_PASCAL}BlocProvider in your widget tree"
